@@ -12,8 +12,7 @@ contract PantlessDAOToken is
     ERC721Enumerable,
     ERC721Burnable
 {
-    uint256 private _nextFounderTokenId;
-    uint256 private _nextPublicTokenId;
+    uint256 private _nextTokenId;
     string private _baseTokenURI;
     address payable private _treasury;
 
@@ -24,13 +23,21 @@ contract PantlessDAOToken is
 
     bool public isActive;
 
+    enum TokenType {
+      PUBLIC,
+      FOUNDER
+    }
+    mapping(uint256 => TokenType) public tokenIdToType;
+
     mapping(address => uint256) public addressToNumClaimableFounderTokens;
     mapping(address => uint256) public addressToNumClaimablePublicTokens;
 
     mapping(address => uint256) public addressToNumMintableFounderTokens;
 
-    event Claimed(address indexed claimer, uint256 indexed tokenId);
-    event Minted(address indexed minter, uint256 indexed tokenId);
+    event FounderTokenClaimed(address indexed claimer, uint256 indexed tokenId);
+    event PublicTokenClaimed(address indexed claimer, uint256 indexed tokenId);
+    event FounderTokenMinted(address indexed minter, uint256 indexed tokenId);
+    event PublicTokenMinted(address indexed minter, uint256 indexed tokenId);
 
     constructor(string memory baseTokenURI, address payable treasury)
         ERC721("Pantless DAO Token", "PANTLESS")
@@ -38,12 +45,12 @@ contract PantlessDAOToken is
         _baseTokenURI = baseTokenURI;
         _treasury = treasury;
 
+        // TODO: Grant DEFAULT_ADMIN_ROLE & ADMIN_ROLE to Uncle Ether
         _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
-        _setupRole(ADMIN_ROLE, _msgSender());
-    }
 
-    function _baseURI() internal view override returns (string memory) {
-        return _baseTokenURI;
+        _setRoleAdmin(ADMIN_ROLE, DEFAULT_ADMIN_ROLE);
+
+        _setupRole(ADMIN_ROLE, _msgSender());
     }
 
     function setBaseTokenURI(string memory baseTokenURI)
@@ -53,15 +60,55 @@ contract PantlessDAOToken is
         _baseTokenURI = baseTokenURI;
     }
 
+    function setMaxSupply(uint256 maxSupply_) external onlyRole(ADMIN_ROLE) {
+      maxSupply = maxSupply_;
+    }
+
     function toggleIsActive() external onlyRole(ADMIN_ROLE) {
         isActive = !isActive;
+    }
+
+    function setNumClaimableFounderTokensForAddresses(
+        address[] calldata addresses,
+        uint256[] calldata numClaimableFounderTokenss
+    ) external {
+        uint256 numAddresses = addresses.length;
+        for (uint256 i = 0; i < numAddresses; ++i) {
+            addressToNumClaimableFounderTokens[
+                addresses[i]
+            ] = numClaimableFounderTokenss[i];
+        }
+    }
+
+    function setNumClaimablePublicTokensForAddresses(
+        address[] calldata addresses,
+        uint256[] calldata numClaimablePublicTokenss
+    ) external {
+        uint256 numAddresses = addresses.length;
+        for (uint256 i = 0; i < numAddresses; ++i) {
+            addressToNumClaimablePublicTokens[
+                addresses[i]
+            ] = numClaimablePublicTokenss[i];
+        }
+    }
+
+    function setNumMintableFounderTokensForAddresses(
+        address[] calldata addresses,
+        uint256[] calldata numMintableFounderTokenss
+    ) external {
+        uint256 numAddresses = addresses.length;
+        for (uint256 i = 0; i < numAddresses; ++i) {
+            addressToNumMintableFounderTokens[
+                addresses[i]
+            ] = numMintableFounderTokenss[i];
+        }
     }
 
     function claimFounderToken(address to, uint256 qty) external {
         require(isActive, "Not active");
         require(
             addressToNumClaimableFounderTokens[to] > qty,
-            "Not enough tokens to claim"
+            "Not enough quota"
         );
 
         addressToNumClaimableFounderTokens[to] -= qty;
@@ -69,15 +116,6 @@ contract PantlessDAOToken is
         for (uint256 i = 0; i < qty; ++i) {
             _claimFounderToken(to);
         }
-    }
-
-    function _claimFounderToken(address to) internal {
-        uint256 newTokenId = _nextFounderTokenId;
-        ++_nextFounderTokenId;
-
-        _mint(to, newTokenId);
-
-        emit Claimed(to, newTokenId);
     }
 
     function claimPublicToken(address to, uint256 qty) external {
@@ -92,15 +130,6 @@ contract PantlessDAOToken is
         for (uint256 i = 0; i < qty; ++i) {
             _claimPublicToken(to);
         }
-    }
-
-    function _claimPublicToken(address to) internal {
-        uint256 newTokenId = _nextPublicTokenId;
-        ++_nextPublicTokenId;
-
-        _mint(to, newTokenId);
-
-        emit Claimed(to, newTokenId);
     }
 
     function mintFounderToken(address to, uint256 qty) external payable {
@@ -119,15 +148,6 @@ contract PantlessDAOToken is
         }
     }
 
-    function _mintFounderToken(address to) internal {
-        uint256 newTokenId = _nextFounderTokenId;
-        ++_nextFounderTokenId;
-
-        _mint(to, newTokenId);
-
-        emit Minted(to, newTokenId);
-    }
-
     function mintPublicToken(address to, uint256 qty) external payable {
         require(isActive, "Not active");
         require(totalSupply() + qty <= maxSupply, "No tokens left");
@@ -140,17 +160,50 @@ contract PantlessDAOToken is
         }
     }
 
-    function _mintPublicToken(address to) internal {
-        uint256 newTokenId = _nextPublicTokenId;
-        ++_nextPublicTokenId;
-
-        _mint(to, newTokenId);
-
-        emit Minted(to, newTokenId);
-    }
-
     function withdraw() external onlyRole(ADMIN_ROLE) {
         _treasury.transfer(address(this).balance);
+    }
+
+    function _claimFounderToken(address to) internal {
+        uint256 newTokenId = _nextTokenId;
+        ++_nextTokenId;
+
+        tokenIdToType[newTokenId] = TokenType.FOUNDER;
+        _safeMint(to, newTokenId);
+
+        emit FounderTokenClaimed(to, newTokenId);
+    }
+
+    function _claimPublicToken(address to) internal {
+        uint256 newTokenId = _nextTokenId;
+        ++_nextTokenId;
+
+        _safeMint(to, newTokenId);
+
+        emit PublicTokenClaimed(to, newTokenId);
+    }
+
+    function _mintFounderToken(address to) internal {
+        uint256 newTokenId = _nextTokenId;
+        ++_nextTokenId;
+
+        tokenIdToType[newTokenId] = TokenType.FOUNDER;
+        _safeMint(to, newTokenId);
+
+        emit FounderTokenMinted(to, newTokenId);
+    }
+
+    function _mintPublicToken(address to) internal {
+        uint256 newTokenId = _nextTokenId;
+        ++_nextTokenId;
+
+        _safeMint(to, newTokenId);
+
+        emit PublicTokenMinted(to, newTokenId);
+    }
+
+    function _baseURI() internal view override returns (string memory) {
+        return _baseTokenURI;
     }
 
     function _beforeTokenTransfer(
