@@ -22,10 +22,11 @@ contract PantlessDAOToken is
     uint256 public maxSupply = 2500;
 
     bool public isActive;
+    bool public isPublicMintActive;
 
     enum TokenType {
-      PUBLIC,
-      FOUNDER
+        PUBLIC,
+        FOUNDER
     }
     mapping(uint256 => TokenType) public tokenIdToType;
 
@@ -61,11 +62,15 @@ contract PantlessDAOToken is
     }
 
     function setMaxSupply(uint256 maxSupply_) external onlyRole(ADMIN_ROLE) {
-      maxSupply = maxSupply_;
+        maxSupply = maxSupply_;
     }
 
     function toggleIsActive() external onlyRole(ADMIN_ROLE) {
         isActive = !isActive;
+    }
+
+    function toggleIsPublicMintActive() external onlyRole(ADMIN_ROLE) {
+        isPublicMintActive = !isPublicMintActive;
     }
 
     function setNumClaimableFounderTokensForAddresses(
@@ -107,7 +112,7 @@ contract PantlessDAOToken is
     function claimFounderToken(address to, uint256 qty) external {
         require(isActive, "Not active");
         require(
-            addressToNumClaimableFounderTokens[to] > qty,
+            qty <= addressToNumClaimableFounderTokens[to],
             "Not enough quota"
         );
 
@@ -121,7 +126,7 @@ contract PantlessDAOToken is
     function claimPublicToken(address to, uint256 qty) external {
         require(isActive, "Not active");
         require(
-            addressToNumClaimablePublicTokens[to] > qty,
+            qty <= addressToNumClaimablePublicTokens[to],
             "Not enough quota"
         );
 
@@ -135,7 +140,7 @@ contract PantlessDAOToken is
     function mintFounderToken(address to, uint256 qty) external payable {
         require(isActive, "Not active");
         require(
-            addressToNumMintableFounderTokens[to] > qty,
+            qty <= addressToNumMintableFounderTokens[to],
             "Not enough quota"
         );
         require(msg.value == qty * PRICE_PER_TOKEN, "Wrong value");
@@ -150,6 +155,7 @@ contract PantlessDAOToken is
 
     function mintPublicToken(address to, uint256 qty) external payable {
         require(isActive, "Not active");
+        require(isPublicMintActive, "Public mint not active");
         require(totalSupply() + qty <= maxSupply, "No tokens left");
         require(msg.value == qty * PRICE_PER_TOKEN, "Wrong value");
 
