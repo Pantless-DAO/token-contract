@@ -12,33 +12,33 @@ contract PantlessDAOToken is
     ERC721Enumerable,
     ERC721Burnable
 {
-    uint256 private _nextTokenId;
     string private _baseTokenURI;
     address payable private _treasury;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-
     uint256 public constant PRICE_PER_TOKEN = 0.1 ether;
-    uint256 public maxSupply = 2500;
 
-    bool public isActive;
-    bool public isPublicMintActive;
+    uint256 public constant CLAIMABLE_FOUNDER_TOKEN_END_ID = 125;
+    uint256 public constant MINTABLE_FOUNDER_TOKEN_END_ID = 250;
+    uint256 public constant CLAIMABLE_STANDARD_TOKEN_END_ID = 1250;
+    uint256 public constant MINTABLE_STANDARD_TOKEN_END_ID = 2500;
 
-    enum TokenType {
-        PUBLIC,
-        FOUNDER
-    }
-    mapping(uint256 => TokenType) public tokenIdToType;
+    uint256 public nextClaimableFounderTokenId = 1;
+    uint256 public nextMintableFounderTokenId;
+    uint256 public nextClaimableStandardTokenId;
+    uint256 public nextMintableStandardTokenId;
+
+    bool public isActive = false;
 
     mapping(address => uint256) public addressToNumClaimableFounderTokens;
-    mapping(address => uint256) public addressToNumClaimablePublicTokens;
+    mapping(address => uint256) public addressToNumClaimableStandardTokens;
 
     mapping(address => uint256) public addressToNumMintableFounderTokens;
 
-    event FounderTokenClaimed(address indexed claimer, uint256 indexed tokenId);
-    event PublicTokenClaimed(address indexed claimer, uint256 indexed tokenId);
-    event FounderTokenMinted(address indexed minter, uint256 indexed tokenId);
-    event PublicTokenMinted(address indexed minter, uint256 indexed tokenId);
+    event FounderTokenClaimed(address indexed to, uint256 indexed tokenId);
+    event StandardTokenClaimed(address indexed to, uint256 indexed tokenId);
+    event FounderTokenMinted(address indexed to, uint256 indexed tokenId);
+    event StandardTokenMinted(address indexed to, uint256 indexed tokenId);
 
     constructor(string memory baseTokenURI, address payable treasury)
         ERC721("Pantless DAO Token", "PANTLESS")
@@ -48,10 +48,13 @@ contract PantlessDAOToken is
 
         // TODO: Grant DEFAULT_ADMIN_ROLE & ADMIN_ROLE to Uncle Ether
         _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
+        _setupRole(ADMIN_ROLE, _msgSender());
 
         _setRoleAdmin(ADMIN_ROLE, DEFAULT_ADMIN_ROLE);
 
-        _setupRole(ADMIN_ROLE, _msgSender());
+        nextMintableFounderTokenId = CLAIMABLE_STANDARD_TOKEN_END_ID + 1;
+        nextClaimableStandardTokenId = MINTABLE_FOUNDER_TOKEN_END_ID + 1;
+        nextMintableStandardTokenId = CLAIMABLE_STANDARD_TOKEN_END_ID + 1;
     }
 
     function setBaseTokenURI(string memory baseTokenURI)
@@ -61,16 +64,8 @@ contract PantlessDAOToken is
         _baseTokenURI = baseTokenURI;
     }
 
-    function setMaxSupply(uint256 maxSupply_) external onlyRole(ADMIN_ROLE) {
-        maxSupply = maxSupply_;
-    }
-
     function toggleIsActive() external onlyRole(ADMIN_ROLE) {
         isActive = !isActive;
-    }
-
-    function toggleIsPublicMintActive() external onlyRole(ADMIN_ROLE) {
-        isPublicMintActive = !isPublicMintActive;
     }
 
     function setNumClaimableFounderTokensForAddresses(
@@ -85,15 +80,15 @@ contract PantlessDAOToken is
         }
     }
 
-    function setNumClaimablePublicTokensForAddresses(
+    function setNumClaimableStandardTokensForAddresses(
         address[] calldata addresses,
-        uint256[] calldata numClaimablePublicTokenss
+        uint256[] calldata numClaimableStandardTokenss
     ) external {
         uint256 numAddresses = addresses.length;
         for (uint256 i = 0; i < numAddresses; ++i) {
-            addressToNumClaimablePublicTokens[
+            addressToNumClaimableStandardTokens[
                 addresses[i]
-            ] = numClaimablePublicTokenss[i];
+            ] = numClaimableStandardTokenss[i];
         }
     }
 
@@ -112,6 +107,11 @@ contract PantlessDAOToken is
     function claimFounderToken(address to, uint256 qty) external {
         require(isActive, "Not active");
         require(
+            nextClaimableFounderTokenId + qty - 1 <=
+                CLAIMABLE_FOUNDER_TOKEN_END_ID,
+            "No tokens left"
+        );
+        require(
             qty <= addressToNumClaimableFounderTokens[to],
             "Not enough quota"
         );
@@ -123,22 +123,32 @@ contract PantlessDAOToken is
         }
     }
 
-    function claimPublicToken(address to, uint256 qty) external {
+    function claimStandardToken(address to, uint256 qty) external {
         require(isActive, "Not active");
         require(
-            qty <= addressToNumClaimablePublicTokens[to],
+            nextClaimableStandardTokenId + qty - 1 <=
+                CLAIMABLE_STANDARD_TOKEN_END_ID,
+            "No tokens left"
+        );
+        require(
+            qty <= addressToNumClaimableStandardTokens[to],
             "Not enough quota"
         );
 
-        addressToNumClaimablePublicTokens[to] -= qty;
+        addressToNumClaimableStandardTokens[to] -= qty;
 
         for (uint256 i = 0; i < qty; ++i) {
-            _claimPublicToken(to);
+            _claimStandardToken(to);
         }
     }
 
     function mintFounderToken(address to, uint256 qty) external payable {
         require(isActive, "Not active");
+        require(
+            nextMintableFounderTokenId + qty - 1 <=
+                MINTABLE_FOUNDER_TOKEN_END_ID,
+            "No tokens left"
+        );
         require(
             qty <= addressToNumMintableFounderTokens[to],
             "Not enough quota"
@@ -153,16 +163,19 @@ contract PantlessDAOToken is
         }
     }
 
-    function mintPublicToken(address to, uint256 qty) external payable {
+    function mintStandardToken(address to, uint256 qty) external payable {
         require(isActive, "Not active");
-        require(isPublicMintActive, "Public mint not active");
-        require(totalSupply() + qty <= maxSupply, "No tokens left");
+        require(
+            nextMintableStandardTokenId + qty - 1 <=
+                MINTABLE_STANDARD_TOKEN_END_ID,
+            "No tokens left"
+        );
         require(msg.value == qty * PRICE_PER_TOKEN, "Wrong value");
 
         _treasury.transfer(msg.value);
 
         for (uint256 i = 0; i < qty; ++i) {
-            _mintPublicToken(to);
+            _mintStandardToken(to);
         }
     }
 
@@ -171,41 +184,39 @@ contract PantlessDAOToken is
     }
 
     function _claimFounderToken(address to) internal {
-        uint256 newTokenId = _nextTokenId;
-        ++_nextTokenId;
+        uint256 newTokenId = nextClaimableFounderTokenId;
+        ++nextClaimableFounderTokenId;
 
-        tokenIdToType[newTokenId] = TokenType.FOUNDER;
         _safeMint(to, newTokenId);
 
         emit FounderTokenClaimed(to, newTokenId);
     }
 
-    function _claimPublicToken(address to) internal {
-        uint256 newTokenId = _nextTokenId;
-        ++_nextTokenId;
+    function _claimStandardToken(address to) internal {
+        uint256 newTokenId = nextClaimableStandardTokenId;
+        ++nextClaimableStandardTokenId;
 
         _safeMint(to, newTokenId);
 
-        emit PublicTokenClaimed(to, newTokenId);
+        emit StandardTokenClaimed(to, newTokenId);
     }
 
     function _mintFounderToken(address to) internal {
-        uint256 newTokenId = _nextTokenId;
-        ++_nextTokenId;
+        uint256 newTokenId = nextMintableFounderTokenId;
+        ++nextMintableFounderTokenId;
 
-        tokenIdToType[newTokenId] = TokenType.FOUNDER;
         _safeMint(to, newTokenId);
 
         emit FounderTokenMinted(to, newTokenId);
     }
 
-    function _mintPublicToken(address to) internal {
-        uint256 newTokenId = _nextTokenId;
-        ++_nextTokenId;
+    function _mintStandardToken(address to) internal {
+        uint256 newTokenId = nextMintableStandardTokenId;
+        ++nextMintableStandardTokenId;
 
         _safeMint(to, newTokenId);
 
-        emit PublicTokenMinted(to, newTokenId);
+        emit StandardTokenMinted(to, newTokenId);
     }
 
     function _baseURI() internal view override returns (string memory) {
