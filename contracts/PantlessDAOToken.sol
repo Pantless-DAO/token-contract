@@ -52,7 +52,7 @@ contract PantlessDAOToken is
 
         _setRoleAdmin(ADMIN_ROLE, DEFAULT_ADMIN_ROLE);
 
-        nextMintableFounderTokenId = CLAIMABLE_STANDARD_TOKEN_END_ID + 1;
+        nextMintableFounderTokenId = CLAIMABLE_FOUNDER_TOKEN_END_ID + 1;
         nextClaimableStandardTokenId = MINTABLE_FOUNDER_TOKEN_END_ID + 1;
         nextMintableStandardTokenId = CLAIMABLE_STANDARD_TOKEN_END_ID + 1;
     }
