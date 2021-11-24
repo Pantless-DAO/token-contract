@@ -3,179 +3,203 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
+import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
+import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Burnable.sol";
+import "@openzeppelin/contracts/token/ERC1155/extensions/ERC1155Supply.sol";
 
 contract PantlessDAOToken is
     Context,
     AccessControlEnumerable,
-    ERC721Enumerable,
-    ERC721Burnable
+    ERC1155,
+    ERC1155Burnable,
+    ERC1155Supply
 {
-    string private _baseTokenURI;
+    struct TokenData {
+        uint256 offset;
+        uint256 maxSupply;
+        uint256[] variationToMaxSupply;
+        mapping(address => uint256) addressToNumClaimableTokens;
+        mapping(address => uint256) addressToNumMintableTokens;
+        uint256 pricePerToken;
+    }
+
     address payable private _treasury;
 
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    uint256 public constant PRICE_PER_TOKEN = 0.1 ether;
-
-    uint256 public constant CLAIMABLE_FOUNDER_TOKEN_END_ID = 125;
-    uint256 public constant MINTABLE_FOUNDER_TOKEN_END_ID = 250;
-    uint256 public constant CLAIMABLE_STANDARD_TOKEN_END_ID = 1250;
-    uint256 public constant MINTABLE_STANDARD_TOKEN_END_ID = 2500;
-
-    uint256 public nextClaimableFounderTokenId = 1;
-    uint256 public nextMintableFounderTokenId;
-    uint256 public nextClaimableStandardTokenId;
-    uint256 public nextMintableStandardTokenId;
 
     bool public isActive = false;
 
-    mapping(address => uint256) public addressToNumClaimableFounderTokens;
-    mapping(address => uint256) public addressToNumClaimableStandardTokens;
+    TokenData[256] public tokenTypeToData;
+    uint8[] public tokenIdToType;
 
-    mapping(address => uint256) public addressToNumMintableFounderTokens;
+    event TokenClaimed(address indexed to, uint256 indexed tokenId);
+    event TokenMinted(address indexed to, uint256 indexed tokenId);
 
-    event FounderTokenClaimed(address indexed to, uint256 indexed tokenId);
-    event StandardTokenClaimed(address indexed to, uint256 indexed tokenId);
-    event FounderTokenMinted(address indexed to, uint256 indexed tokenId);
-    event StandardTokenMinted(address indexed to, uint256 indexed tokenId);
-
-    constructor(string memory baseTokenURI, address payable treasury)
-        ERC721("Pantless DAO Token", "PANTLESS")
-    {
-        _baseTokenURI = baseTokenURI;
+    constructor(string memory uri, address payable treasury) ERC1155(uri) {
         _treasury = treasury;
 
-        // TODO: Grant DEFAULT_ADMIN_ROLE & ADMIN_ROLE to Uncle Ether
+        // TODO: Grant DEFAULT_ADMIN_ROLE & ADMIN_ROLE to Uncle Ether instead of
+        // the deployer.
         _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
         _setupRole(ADMIN_ROLE, _msgSender());
 
         _setRoleAdmin(ADMIN_ROLE, DEFAULT_ADMIN_ROLE);
-
-        nextMintableFounderTokenId = CLAIMABLE_FOUNDER_TOKEN_END_ID + 1;
-        nextClaimableStandardTokenId = MINTABLE_FOUNDER_TOKEN_END_ID + 1;
-        nextMintableStandardTokenId = CLAIMABLE_STANDARD_TOKEN_END_ID + 1;
     }
 
-    function setBaseTokenURI(string memory baseTokenURI)
-        external
-        onlyRole(ADMIN_ROLE)
-    {
-        _baseTokenURI = baseTokenURI;
+    function setUri(string memory uri) external onlyRole(ADMIN_ROLE) {
+        _setURI(uri);
     }
 
     function toggleIsActive() external onlyRole(ADMIN_ROLE) {
         isActive = !isActive;
     }
 
-    function setNumClaimableFounderTokensForAddresses(
-        address[] calldata addresses,
-        uint256[] calldata numClaimableFounderTokenss
-    ) external {
-        uint256 numAddresses = addresses.length;
-        for (uint256 i = 0; i < numAddresses; ++i) {
-            addressToNumClaimableFounderTokens[
-                addresses[i]
-            ] = numClaimableFounderTokenss[i];
+    function setDataForTokenType(
+        uint256 offset,
+        uint256[] calldata variationToMaxSupply,
+        uint256 pricePerToken,
+        uint8 tokenType
+    ) external onlyRole(ADMIN_ROLE) {
+        TokenData storage tokenData = tokenTypeToData[tokenType];
+        tokenData.offset = offset;
+        tokenData.variationToMaxSupply = variationToMaxSupply;
+        uint256 numVariations = tokenData.variationToMaxSupply.length;
+        for (uint256 i = 0; i < numVariations; ++i) {
+            tokenData.maxSupply += tokenData.variationToMaxSupply[i];
         }
+        for (uint256 i = 0; i < numVariations; ++i) {
+            tokenIdToType[tokenData.offset + i] = tokenType;
+        }
+        tokenData.pricePerToken = pricePerToken;
     }
 
-    function setNumClaimableStandardTokensForAddresses(
+    function setNumClaimableTokensForAddresses(
         address[] calldata addresses,
-        uint256[] calldata numClaimableStandardTokenss
-    ) external {
-        uint256 numAddresses = addresses.length;
-        for (uint256 i = 0; i < numAddresses; ++i) {
-            addressToNumClaimableStandardTokens[
-                addresses[i]
-            ] = numClaimableStandardTokenss[i];
-        }
-    }
-
-    function setNumMintableFounderTokensForAddresses(
-        address[] calldata addresses,
-        uint256[] calldata numMintableFounderTokenss
-    ) external {
-        uint256 numAddresses = addresses.length;
-        for (uint256 i = 0; i < numAddresses; ++i) {
-            addressToNumMintableFounderTokens[
-                addresses[i]
-            ] = numMintableFounderTokenss[i];
-        }
-    }
-
-    function claimFounderToken(address to, uint256 qty) external {
-        require(isActive, "Not active");
+        uint256[] calldata numClaimableTokenss,
+        uint8 tokenType
+    ) external onlyRole(ADMIN_ROLE) {
         require(
-            nextClaimableFounderTokenId + qty - 1 <=
-                CLAIMABLE_FOUNDER_TOKEN_END_ID,
+            addresses.length == numClaimableTokenss.length,
+            "Lengths not match"
+        );
+        TokenData storage tokenData = tokenTypeToData[tokenType];
+        uint256 numAddresses = addresses.length;
+        for (uint256 i = 0; i < numAddresses; ++i) {
+            tokenData.addressToNumClaimableTokens[
+                addresses[i]
+            ] = numClaimableTokenss[i];
+        }
+    }
+
+    function setNumMintableTokensForAddresses(
+        address[] calldata addresses,
+        uint256[] calldata numMintableTokenss,
+        uint8 tokenType
+    ) external onlyRole(ADMIN_ROLE) {
+        require(
+            addresses.length == numMintableTokenss.length,
+            "Lengths not match"
+        );
+        TokenData storage tokenData = tokenTypeToData[tokenType];
+        uint256 numAddresses = addresses.length;
+        for (uint256 i = 0; i < numAddresses; ++i) {
+            tokenData.addressToNumMintableTokens[
+                addresses[i]
+            ] = numMintableTokenss[i];
+        }
+    }
+
+    function claimToken(
+        address to,
+        uint256 qty,
+        uint8 tokenType
+    ) external {
+        require(isActive, "Not active");
+        TokenData storage tokenData = tokenTypeToData[tokenType];
+        uint256 offset = tokenData.offset;
+        uint256[] memory variationToMaxSupply = tokenData.variationToMaxSupply;
+        uint256 numVariations = variationToMaxSupply.length;
+        uint256 tokenTypeTotalSupply = 0;
+        for (uint256 i = 0; i < numVariations; ++i) {
+            tokenTypeTotalSupply += totalSupply(offset + i);
+        }
+        require(
+            tokenTypeTotalSupply + qty <= tokenData.maxSupply,
             "No tokens left"
         );
         require(
-            qty <= addressToNumClaimableFounderTokens[to],
+            qty <= tokenData.addressToNumClaimableTokens[to],
             "Not enough quota"
         );
 
-        addressToNumClaimableFounderTokens[to] -= qty;
+        tokenData.addressToNumClaimableTokens[to] -= qty;
 
         for (uint256 i = 0; i < qty; ++i) {
-            _claimFounderToken(to);
+            uint256 newTokenId = 0;
+            bool isFound = false;
+            while (!isFound) {
+                newTokenId = _randomNumberBetween(
+                    offset,
+                    offset + numVariations,
+                    i
+                );
+                isFound =
+                    totalSupply(newTokenId) < variationToMaxSupply[newTokenId];
+            }
+            _mint(to, newTokenId, 1, "");
+
+            emit TokenClaimed(to, newTokenId);
         }
     }
 
-    function claimStandardToken(address to, uint256 qty) external {
+    function mintToken(
+        address to,
+        uint256 qty,
+        uint8 tokenType,
+        bool needWhitelist
+    ) external payable {
         require(isActive, "Not active");
-        require(
-            nextClaimableStandardTokenId + qty - 1 <=
-                CLAIMABLE_STANDARD_TOKEN_END_ID,
-            "No tokens left"
-        );
-        require(
-            qty <= addressToNumClaimableStandardTokens[to],
-            "Not enough quota"
-        );
-
-        addressToNumClaimableStandardTokens[to] -= qty;
-
-        for (uint256 i = 0; i < qty; ++i) {
-            _claimStandardToken(to);
+        TokenData storage tokenData = tokenTypeToData[tokenType];
+        uint256 offset = tokenData.offset;
+        uint256[] memory variationToMaxSupply = tokenData.variationToMaxSupply;
+        uint256 numVariations = variationToMaxSupply.length;
+        uint256 tokenTypeTotalSupply = 0;
+        for (uint256 i = 0; i < numVariations; ++i) {
+            tokenTypeTotalSupply += totalSupply(offset + i);
         }
-    }
-
-    function mintFounderToken(address to, uint256 qty) external payable {
-        require(isActive, "Not active");
         require(
-            nextMintableFounderTokenId + qty - 1 <=
-                MINTABLE_FOUNDER_TOKEN_END_ID,
+            tokenTypeTotalSupply + qty <= tokenData.maxSupply,
             "No tokens left"
         );
-        require(
-            qty <= addressToNumMintableFounderTokens[to],
-            "Not enough quota"
-        );
-        require(msg.value == qty * PRICE_PER_TOKEN, "Wrong value");
 
-        addressToNumMintableFounderTokens[to] -= qty;
+        if (needWhitelist) {
+            require(
+                qty <= tokenData.addressToNumMintableTokens[to],
+                "Not enough quota"
+            );
+
+            tokenData.addressToNumMintableTokens[to] -= qty;
+        }
+
+        require(msg.value == qty * tokenData.pricePerToken, "Wrong value");
+
         _treasury.transfer(msg.value);
 
         for (uint256 i = 0; i < qty; ++i) {
-            _mintFounderToken(to);
-        }
-    }
+            uint256 newTokenId = 0;
+            bool isFound = false;
+            while (!isFound) {
+                newTokenId = _randomNumberBetween(
+                    offset,
+                    offset + numVariations,
+                    i
+                );
+                isFound =
+                    totalSupply(newTokenId) < variationToMaxSupply[newTokenId];
+            }
+            _mint(to, newTokenId, 1, "");
 
-    function mintStandardToken(address to, uint256 qty) external payable {
-        require(isActive, "Not active");
-        require(
-            nextMintableStandardTokenId + qty - 1 <=
-                MINTABLE_STANDARD_TOKEN_END_ID,
-            "No tokens left"
-        );
-        require(msg.value == qty * PRICE_PER_TOKEN, "Wrong value");
-
-        _treasury.transfer(msg.value);
-
-        for (uint256 i = 0; i < qty; ++i) {
-            _mintStandardToken(to);
+            emit TokenMinted(to, newTokenId);
         }
     }
 
@@ -183,58 +207,65 @@ contract PantlessDAOToken is
         _treasury.transfer(address(this).balance);
     }
 
-    function _claimFounderToken(address to) internal {
-        uint256 newTokenId = nextClaimableFounderTokenId;
-        ++nextClaimableFounderTokenId;
-
-        _safeMint(to, newTokenId);
-
-        emit FounderTokenClaimed(to, newTokenId);
+    function _randomNumberBetween(
+        uint256 min,
+        uint256 max,
+        uint256 n
+    ) internal view returns (uint256) {
+        uint256 range = max - min;
+        return
+            min +
+            (uint256(
+                keccak256(
+                    abi.encodePacked(
+                        n,
+                        block.number,
+                        blockhash(block.number - 1),
+                        _msgSender(),
+                        block.timestamp
+                    )
+                )
+            ) % range);
     }
 
-    function _claimStandardToken(address to) internal {
-        uint256 newTokenId = nextClaimableStandardTokenId;
-        ++nextClaimableStandardTokenId;
-
-        _safeMint(to, newTokenId);
-
-        emit StandardTokenClaimed(to, newTokenId);
+    function _mint(
+        address account,
+        uint256 id,
+        uint256 amount,
+        bytes memory data
+    ) internal override(ERC1155, ERC1155Supply) {
+        super._mint(account, id, amount, data);
     }
 
-    function _mintFounderToken(address to) internal {
-        uint256 newTokenId = nextMintableFounderTokenId;
-        ++nextMintableFounderTokenId;
-
-        _safeMint(to, newTokenId);
-
-        emit FounderTokenMinted(to, newTokenId);
-    }
-
-    function _mintStandardToken(address to) internal {
-        uint256 newTokenId = nextMintableStandardTokenId;
-        ++nextMintableStandardTokenId;
-
-        _safeMint(to, newTokenId);
-
-        emit StandardTokenMinted(to, newTokenId);
-    }
-
-    function _baseURI() internal view override returns (string memory) {
-        return _baseTokenURI;
-    }
-
-    function _beforeTokenTransfer(
-        address from,
+    function _mintBatch(
         address to,
-        uint256 tokenId
-    ) internal override(ERC721, ERC721Enumerable) {
-        super._beforeTokenTransfer(from, to, tokenId);
+        uint256[] memory ids,
+        uint256[] memory amounts,
+        bytes memory data
+    ) internal override(ERC1155, ERC1155Supply) {
+        super._mintBatch(to, ids, amounts, data);
+    }
+
+    function _burn(
+        address account,
+        uint256 id,
+        uint256 amount
+    ) internal override(ERC1155, ERC1155Supply) {
+        super._burn(account, id, amount);
+    }
+
+    function _burnBatch(
+        address account,
+        uint256[] memory ids,
+        uint256[] memory amounts
+    ) internal override(ERC1155, ERC1155Supply) {
+        super._burnBatch(account, ids, amounts);
     }
 
     function supportsInterface(bytes4 interfaceId)
         public
         view
-        override(AccessControlEnumerable, ERC721, ERC721Enumerable)
+        override(AccessControlEnumerable, ERC1155)
         returns (bool)
     {
         return super.supportsInterface(interfaceId);
